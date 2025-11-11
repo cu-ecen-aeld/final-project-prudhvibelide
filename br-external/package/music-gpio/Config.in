@@ -1,0 +1,4 @@
+config BR2_PACKAGE_MUSIC_GPIO
+    bool "music-gpio"
+    help
+      Installs a simple GPIO input kernel module and a user-space test app.

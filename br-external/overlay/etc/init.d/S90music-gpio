@@ -1,0 +1,19 @@
+#!/bin/sh
+# starts kernel module and test app (foreground test is manual)
+case "$1" in
+  start)
+    modprobe -r music_input_driver 2>/dev/null
+    insmod /lib/modules/music_input_driver.ko || exit 1
+    ;;
+  stop)
+    rmmod music_input_driver 2>/dev/null
+    ;;
+  restart)
+    $0 stop; $0 start
+    ;;
+  *)
+    echo "Usage: $0 {start|stop|restart}"
+    exit 1
+    ;;
+esac
+exit 0
