@@ -5,7 +5,7 @@ This repository contains the implementation for the **Virtualized Embedded Media
 For full project details and documentation, please see the [Project Overview Wiki Page](https://github.com/cu-ecen-aeld/final-project-prudhvibelide/wiki/Project-Overview).
 
 
-## Update unitl Sprint 2 
+## Update until Sprint 2 
 
 Hardware: Raspberry Pi 4 Model B
 OS: Custom Buildroot Linux (ARM64)
@@ -85,4 +85,5 @@ cat /dev/music_input
 
 # Check binding
 ls /sys/bus/platform/drivers/music_input/
+
 
