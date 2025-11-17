@@ -10,12 +10,11 @@ For full project details and documentation, please see the [Project Overview Wik
 Hardware: Raspberry Pi 4 Model B
 OS: Custom Buildroot Linux (ARM64)
 Kernel: Linux 6.6.78-v8
-Language: C (Kernel module)
 
 
-# Current Status
+## Current Status
 
-#Completed Features
+# Completed Features
 
 A. Buildroot System
 The entire Buildroot environment is fully functional:
@@ -86,3 +85,4 @@ cat /dev/music_input
 
 # Check binding
 ls /sys/bus/platform/drivers/music_input/
+
