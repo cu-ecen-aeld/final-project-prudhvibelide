@@ -1,3 +1,9 @@
-menu "Custom packages"
-source "$BR2_EXTERNAL_FINAL_PROJECT_PATH/package/music-gpio/Config.in"
+menu "Custom AESD Final Project Packages"
+
+source "$BR2_EXTERNAL_final_project_PATH/package/music-gpio/Config.in"
+source "$BR2_EXTERNAL_final_project_PATH/package/music-daemon/Config.in"
+
 endmenu
+
+
+

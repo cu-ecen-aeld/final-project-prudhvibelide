@@ -1,19 +1,32 @@
 #!/bin/sh
-# starts kernel module and test app (foreground test is manual)
+# Simple init script for music_daemon
+
+DAEMON=/usr/sbin/music_daemon
+PIDFILE=/var/run/music_daemon.pid
+
 case "$1" in
   start)
-    modprobe -r music_input_driver 2>/dev/null
-    insmod /lib/modules/music_input_driver.ko || exit 1
+    echo "Starting music_daemon..."
+    if [ -x "$DAEMON" ]; then
+      start-stop-daemon -S -b -m -p "$PIDFILE" --exec "$DAEMON"
+    fi
     ;;
   stop)
-    rmmod music_input_driver 2>/dev/null
+    echo "Stopping music_daemon..."
+    if [ -f "$PIDFILE" ]; then
+      start-stop-daemon -K -p "$PIDFILE"
+      rm -f "$PIDFILE"
+    fi
     ;;
   restart)
-    $0 stop; $0 start
+    $0 stop
+    $0 start
     ;;
   *)
     echo "Usage: $0 {start|stop|restart}"
     exit 1
     ;;
 esac
+
 exit 0
+

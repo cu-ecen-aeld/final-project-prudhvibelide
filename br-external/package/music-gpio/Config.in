@@ -1,4 +1,5 @@
 config BR2_PACKAGE_MUSIC_GPIO
-    bool "music-gpio"
+    bool "music-gpio (button input driver + test)"
     help
-      Installs a simple GPIO input kernel module and a user-space test app.
+      Installs a simple GPIO button character driver (/dev/music_input)
+      and a small user-space test program to read button events.

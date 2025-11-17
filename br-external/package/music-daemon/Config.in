@@ -1,0 +1,7 @@
+config BR2_PACKAGE_MUSIC_DAEMON
+    bool "music-daemon (user-space control daemon)"
+    select BR2_PACKAGE_MUSIC_GPIO
+    help
+      Simple daemon that reads /dev/music_input and exposes
+      a Unix domain socket for control and status.
+
