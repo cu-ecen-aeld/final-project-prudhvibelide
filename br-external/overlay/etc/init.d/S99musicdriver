@@ -1,0 +1,9 @@
+#!/bin/sh
+case "$1" in
+  start)
+    insmod /lib/modules/6.6.78-v8/extra/music_input_driver.ko
+    ;;
+  stop)
+    rmmod music_input_driver
+    ;;
+esac
