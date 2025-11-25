@@ -1,15 +1,29 @@
 /dts-v1/;
 /plugin/;
-
 / {
     compatible = "brcm,bcm2711";
     
     fragment@0 {
-        target-path = "/";
+        target = <&gpio>;
+        __overlay__ {
+            button_pins: button_pins {
+                brcm,pins = <17 27 22>;
+                brcm,function = <0>;
+                brcm,pull = <2>;
+            };
+        };
+    };
+    
+    fragment@1 {
+        target-path = "/soc";
         __overlay__ {
             music_input {
                 compatible = "music-input-device";
-                btn-gpios = <&gpio 17 1>;
+                pinctrl-names = "default";
+                pinctrl-0 = <&button_pins>;
+                play-gpios = <&gpio 17 0>;
+                next-gpios = <&gpio 27 0>;
+                prev-gpios = <&gpio 22 0>;
                 status = "okay";
             };
         };

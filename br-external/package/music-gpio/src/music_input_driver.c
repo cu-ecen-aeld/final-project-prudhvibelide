@@ -8,43 +8,70 @@
 #include <linux/interrupt.h>
 #include <linux/of.h>
 #include <linux/uaccess.h>
+#include <linux/jiffies.h>
 
 #define DRV_NAME "music_input"
+#define DEBOUNCE_MS 200
+
+static unsigned long last_play_time = 0;
+static unsigned long last_next_time = 0;
+static unsigned long last_prev_time = 0;
 
 static dev_t devno;
 static struct cdev mid_cdev;
 static struct class *mid_class;
 static struct device *mid_dev;
 
-static struct gpio_desc *btn_gpiod;
-static int btn_irq = -1;
+static struct gpio_desc *play_gpiod;
+static struct gpio_desc *next_gpiod;
+static struct gpio_desc *prev_gpiod;
+static int play_irq = -1;
+static int next_irq = -1;
+static int prev_irq = -1;
 
-/* ---------------------------------------------------------------------- */
-/* ISR – simple interrupt handler                                         */
-/* ---------------------------------------------------------------------- */
-static irqreturn_t mid_isr(int irq, void *data)
+static irqreturn_t play_isr(int irq, void *data)
 {
-    pr_info("%s: Button interrupt occurred\n", DRV_NAME);
+    unsigned long now = jiffies;
+    if (time_after(now, last_play_time + msecs_to_jiffies(DEBOUNCE_MS))) {
+        last_play_time = now;
+        pr_info("%s: PLAY/PAUSE button pressed\n", DRV_NAME);
+    }
     return IRQ_HANDLED;
 }
 
-/* ---------------------------------------------------------------------- */
-/* File operations                                                        */
-/* ---------------------------------------------------------------------- */
+static irqreturn_t next_isr(int irq, void *data)
+{
+    unsigned long now = jiffies;
+    if (time_after(now, last_next_time + msecs_to_jiffies(DEBOUNCE_MS))) {
+        last_next_time = now;
+        pr_info("%s: NEXT button pressed\n", DRV_NAME);
+    }
+    return IRQ_HANDLED;
+}
+
+static irqreturn_t prev_isr(int irq, void *data)
+{
+    unsigned long now = jiffies;
+    if (time_after(now, last_prev_time + msecs_to_jiffies(DEBOUNCE_MS))) {
+        last_prev_time = now;
+        pr_info("%s: PREV button pressed\n", DRV_NAME);
+    }
+    return IRQ_HANDLED;
+}
 
 static ssize_t mid_read(struct file *f, char __user *buf, size_t len, loff_t *off)
 {
-    int gpio_value;
-    char msg[16];
+    int play_val, next_val, prev_val;
+    char msg[64];
     int msg_len;
     
-    /* Read the current GPIO state */
-    gpio_value = gpiod_get_value(btn_gpiod);
+    play_val = gpiod_get_value(play_gpiod);
+    next_val = gpiod_get_value(next_gpiod);
+    prev_val = gpiod_get_value(prev_gpiod);
     
-    /* Format message: "0\n" or "1\n" */
-    msg_len = snprintf(msg, sizeof(msg), "%d\n", gpio_value);
+    msg_len = snprintf(msg, sizeof(msg), "play:%d next:%d prev:%d\n", 
+                      play_val, next_val, prev_val);
     
-    /* Send to user space */
     return simple_read_from_buffer(buf, len, off, msg, msg_len);
 }
 
@@ -65,10 +92,6 @@ static const struct file_operations mid_fops = {
     .read = mid_read,
 };
 
-/* ---------------------------------------------------------------------- */
-/* Platform Driver Probe                                                  */
-/* ---------------------------------------------------------------------- */
-
 static int music_input_probe(struct platform_device *pdev)
 {
     int ret;
@@ -76,14 +99,12 @@ static int music_input_probe(struct platform_device *pdev)
 
     pr_info("%s: probe called\n", DRV_NAME);
 
-    /* Allocate char device */
     ret = alloc_chrdev_region(&devno, 0, 1, DRV_NAME);
     if (ret) {
         dev_err(dev, "alloc_chrdev_region failed\n");
         return ret;
     }
 
-    /* Setup cdev */
     cdev_init(&mid_cdev, &mid_fops);
     ret = cdev_add(&mid_cdev, devno, 1);
     if (ret) {
@@ -91,7 +112,6 @@ static int music_input_probe(struct platform_device *pdev)
         goto err_cdev;
     }
 
-    /* Create /sys/class/music_input */
     mid_class = class_create(DRV_NAME);
     if (IS_ERR(mid_class)) {
         dev_err(dev, "class_create failed\n");
@@ -99,7 +119,6 @@ static int music_input_probe(struct platform_device *pdev)
         goto err_class;
     }
 
-    /* Create /dev/music_input */
     mid_dev = device_create(mid_class, dev, devno, NULL, DRV_NAME);
     if (IS_ERR(mid_dev)) {
         dev_err(dev, "device_create failed\n");
@@ -107,35 +126,72 @@ static int music_input_probe(struct platform_device *pdev)
         goto err_dev;
     }
 
-    /* Get GPIO from device tree using platform device */
-    btn_gpiod = devm_gpiod_get(dev, "btn", GPIOD_IN);
-    if (IS_ERR(btn_gpiod)) {
-        dev_err(dev, "Failed to get btn-gpios from device tree\n");
-        ret = PTR_ERR(btn_gpiod);
+    play_gpiod = devm_gpiod_get(dev, "play", GPIOD_IN);
+    if (IS_ERR(play_gpiod)) {
+        dev_err(dev, "Failed to get play-gpios\n");
+        ret = PTR_ERR(play_gpiod);
         goto err_gpio;
     }
 
-    /* Convert GPIO → IRQ */
-    btn_irq = gpiod_to_irq(btn_gpiod);
-    if (btn_irq < 0) {
-        dev_err(dev, "gpiod_to_irq failed\n");
-        ret = btn_irq;
+    next_gpiod = devm_gpiod_get(dev, "next", GPIOD_IN);
+    if (IS_ERR(next_gpiod)) {
+        dev_err(dev, "Failed to get next-gpios\n");
+        ret = PTR_ERR(next_gpiod);
         goto err_gpio;
     }
 
-    /* Request falling-edge interrupt */
-    ret = devm_request_irq(dev, btn_irq, mid_isr,
+    prev_gpiod = devm_gpiod_get(dev, "prev", GPIOD_IN);
+    if (IS_ERR(prev_gpiod)) {
+        dev_err(dev, "Failed to get prev-gpios\n");
+        ret = PTR_ERR(prev_gpiod);
+        goto err_gpio;
+    }
+
+    play_irq = gpiod_to_irq(play_gpiod);
+    if (play_irq < 0) {
+        dev_err(dev, "play gpiod_to_irq failed\n");
+        ret = play_irq;
+        goto err_gpio;
+    }
+    ret = devm_request_irq(dev, play_irq, play_isr,
                            IRQF_TRIGGER_FALLING,
-                           DRV_NAME, NULL);
+                           "play_btn", NULL);
     if (ret) {
-        dev_err(dev, "request_irq failed\n");
+        dev_err(dev, "play request_irq failed\n");
         goto err_gpio;
     }
 
-    /* Store platform device pointer for cleanup */
+    next_irq = gpiod_to_irq(next_gpiod);
+    if (next_irq < 0) {
+        dev_err(dev, "next gpiod_to_irq failed\n");
+        ret = next_irq;
+        goto err_gpio;
+    }
+    ret = devm_request_irq(dev, next_irq, next_isr,
+                           IRQF_TRIGGER_FALLING,
+                           "next_btn", NULL);
+    if (ret) {
+        dev_err(dev, "next request_irq failed\n");
+        goto err_gpio;
+    }
+
+    prev_irq = gpiod_to_irq(prev_gpiod);
+    if (prev_irq < 0) {
+        dev_err(dev, "prev gpiod_to_irq failed\n");
+        ret = prev_irq;
+        goto err_gpio;
+    }
+    ret = devm_request_irq(dev, prev_irq, prev_isr,
+                           IRQF_TRIGGER_FALLING,
+                           "prev_btn", NULL);
+    if (ret) {
+        dev_err(dev, "prev request_irq failed\n");
+        goto err_gpio;
+    }
+
     platform_set_drvdata(pdev, mid_dev);
 
-    dev_info(dev, "driver probed successfully\n");
+    dev_info(dev, "3-button driver with debouncing loaded\n");
     return 0;
 
 err_gpio:
@@ -149,13 +205,8 @@ err_cdev:
     return ret;
 }
 
-/* ---------------------------------------------------------------------- */
-/* Platform Driver Remove                                                 */
-/* ---------------------------------------------------------------------- */
-
 static int music_input_remove(struct platform_device *pdev)
 {
-    /* devm_* functions auto-cleanup GPIO and IRQ */
     device_destroy(mid_class, devno);
     class_destroy(mid_class);
     cdev_del(&mid_cdev);
@@ -165,19 +216,11 @@ static int music_input_remove(struct platform_device *pdev)
     return 0;
 }
 
-/* ---------------------------------------------------------------------- */
-/* Device Tree Matching                                                   */
-/* ---------------------------------------------------------------------- */
-
 static const struct of_device_id music_input_of_match[] = {
     { .compatible = "music-input-device", },
-    { /* sentinel */ }
+    { }
 };
 MODULE_DEVICE_TABLE(of, music_input_of_match);
-
-/* ---------------------------------------------------------------------- */
-/* Platform Driver Structure                                              */
-/* ---------------------------------------------------------------------- */
 
 static struct platform_driver music_input_driver = {
     .probe = music_input_probe,
@@ -192,5 +235,5 @@ module_platform_driver(music_input_driver);
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Prudhvi");
-MODULE_DESCRIPTION("Music button input driver - Platform Driver");
+MODULE_DESCRIPTION("3-button music input with debouncing");
 MODULE_ALIAS("platform:music_input");

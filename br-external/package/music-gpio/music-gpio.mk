@@ -5,9 +5,12 @@ MUSIC_GPIO_LICENSE = GPL-2.0
 MUSIC_GPIO_LICENSE_FILES =
 
 define MUSIC_GPIO_BUILD_CMDS
-	# Build kernel module
+	# Copy source to build directory
+	cp $(MUSIC_GPIO_SITE)/*.c $(MUSIC_GPIO_SITE)/*.h $(MUSIC_GPIO_SITE)/Makefile $(@D)/ 2>/dev/null || true
+	
+	# Build kernel module in build directory
 	$(MAKE) -C $(LINUX_DIR) \
-		M=$(MUSIC_GPIO_SITE) \
+		M=$(@D) \
 		ARCH=$(KERNEL_ARCH) \
 		CROSS_COMPILE="$(TARGET_CROSS)" \
 		modules
@@ -20,7 +23,7 @@ endef
 
 define MUSIC_GPIO_INSTALL_TARGET_CMDS
 	# Install kernel module
-	$(INSTALL) -D -m 644 $(MUSIC_GPIO_SITE)/music_input_driver.ko \
+		$(INSTALL) -D -m 644 $(@D)/music_input_driver.ko \
 		$(TARGET_DIR)/lib/modules/$(LINUX_VERSION_PROBED)/extra/music_input_driver.ko
 	
 	# Install device tree overlay to /boot/overlays/
