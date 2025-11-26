@@ -5,15 +5,16 @@ MUSIC_DAEMON_LICENSE = MIT
 MUSIC_DAEMON_LICENSE_FILES =
 
 define MUSIC_DAEMON_BUILD_CMDS
-	$(TARGET_CC) $(TARGET_CFLAGS) \
-		-o $(@D)/music_daemon \
-		$(MUSIC_DAEMON_SITE)/music_daemon.c
+    # Copy source to build directory FIRST
+    cp $(MUSIC_DAEMON_SITE)/*.c $(@D)/
+    
+    # Compile in build directory
+    $(TARGET_CC) $(TARGET_CFLAGS) -o $(@D)/music_daemon $(@D)/music_daemon.c
 endef
 
 define MUSIC_DAEMON_INSTALL_TARGET_CMDS
 	$(INSTALL) -D -m 755 $(@D)/music_daemon \
-		$(TARGET_DIR)/usr/sbin/music_daemon
+		$(TARGET_DIR)/usr/bin/music_daemon
 endef
 
 $(eval $(generic-package))
-

@@ -9,9 +9,12 @@
 #include <linux/of.h>
 #include <linux/uaccess.h>
 #include <linux/jiffies.h>
+#include <linux/spinlock.h>
+#include <linux/wait.h>
 
 #define DRV_NAME "music_input"
 #define DEBOUNCE_MS 200
+#define EVENT_BUF_SIZE 32
 
 static unsigned long last_play_time = 0;
 static unsigned long last_next_time = 0;
@@ -29,12 +32,35 @@ static int play_irq = -1;
 static int next_irq = -1;
 static int prev_irq = -1;
 
+/* Event queue */
+static char event_buffer[EVENT_BUF_SIZE];
+static int buf_head = 0;
+static int buf_tail = 0;
+static DEFINE_SPINLOCK(buf_lock);
+static DECLARE_WAIT_QUEUE_HEAD(read_wait);
+
+static void queue_event(char event)
+{
+    unsigned long flags;
+    spin_lock_irqsave(&buf_lock, flags);
+    
+    int next = (buf_head + 1) % EVENT_BUF_SIZE;
+    if (next != buf_tail) {
+        event_buffer[buf_head] = event;
+        buf_head = next;
+        wake_up_interruptible(&read_wait);
+    }
+    
+    spin_unlock_irqrestore(&buf_lock, flags);
+}
+
 static irqreturn_t play_isr(int irq, void *data)
 {
     unsigned long now = jiffies;
     if (time_after(now, last_play_time + msecs_to_jiffies(DEBOUNCE_MS))) {
         last_play_time = now;
         pr_info("%s: PLAY/PAUSE button pressed\n", DRV_NAME);
+        queue_event('P');
     }
     return IRQ_HANDLED;
 }
@@ -45,6 +71,7 @@ static irqreturn_t next_isr(int irq, void *data)
     if (time_after(now, last_next_time + msecs_to_jiffies(DEBOUNCE_MS))) {
         last_next_time = now;
         pr_info("%s: NEXT button pressed\n", DRV_NAME);
+        queue_event('N');
     }
     return IRQ_HANDLED;
 }
@@ -55,24 +82,32 @@ static irqreturn_t prev_isr(int irq, void *data)
     if (time_after(now, last_prev_time + msecs_to_jiffies(DEBOUNCE_MS))) {
         last_prev_time = now;
         pr_info("%s: PREV button pressed\n", DRV_NAME);
+        queue_event('R');
     }
     return IRQ_HANDLED;
 }
 
 static ssize_t mid_read(struct file *f, char __user *buf, size_t len, loff_t *off)
 {
-    int play_val, next_val, prev_val;
-    char msg[64];
-    int msg_len;
+    char event;
+    unsigned long flags;
     
-    play_val = gpiod_get_value(play_gpiod);
-    next_val = gpiod_get_value(next_gpiod);
-    prev_val = gpiod_get_value(prev_gpiod);
+    if (len < 1)
+        return -EINVAL;
     
-    msg_len = snprintf(msg, sizeof(msg), "play:%d next:%d prev:%d\n", 
-                      play_val, next_val, prev_val);
+    /* Block until event available */
+    if (wait_event_interruptible(read_wait, buf_head != buf_tail))
+        return -ERESTARTSYS;
     
-    return simple_read_from_buffer(buf, len, off, msg, msg_len);
+    spin_lock_irqsave(&buf_lock, flags);
+    event = event_buffer[buf_tail];
+    buf_tail = (buf_tail + 1) % EVENT_BUF_SIZE;
+    spin_unlock_irqrestore(&buf_lock, flags);
+    
+    if (copy_to_user(buf, &event, 1))
+        return -EFAULT;
+    
+    return 1;
 }
 
 static int mid_open(struct inode *inode, struct file *f)
@@ -191,7 +226,7 @@ static int music_input_probe(struct platform_device *pdev)
 
     platform_set_drvdata(pdev, mid_dev);
 
-    dev_info(dev, "3-button driver with debouncing loaded\n");
+    dev_info(dev, "3-button driver with event queue loaded\n");
     return 0;
 
 err_gpio:
@@ -234,6 +269,6 @@ static struct platform_driver music_input_driver = {
 module_platform_driver(music_input_driver);
 
 MODULE_LICENSE("GPL");
-MODULE_AUTHOR("Prudhvi");
-MODULE_DESCRIPTION("3-button music input with debouncing");
+MODULE_AUTHOR("Prudhvi Raj Belide");
+MODULE_DESCRIPTION("3-button music input with event queue");
 MODULE_ALIAS("platform:music_input");
