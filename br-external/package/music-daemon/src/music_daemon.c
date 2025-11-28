@@ -1,314 +1,271 @@
 /* music_daemon.c
  * User-space daemon for AESD final project.
- * - Reads button events from /dev/music_input.
- * - Sends notifications over Unix domain socket.
- * - Controls mpg123 playback for songs
- * - mpg123 remote control for pause/play(resume)/prev/next
+ * - Reads button/encoder events from /dev/music_input
+ * - Controls mpg123 to play MP3s
+ * - Simple, stable playback with pause/resume and mute toggle
  */
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
 #include <fcntl.h>
-#include <signal.h>
 #include <errno.h>
 #include <string.h>
 #include <poll.h>
-#include <sys/socket.h>
-#include <sys/un.h>
-#include <sys/stat.h>
-#include <sys/wait.h>
 #include <time.h>
-
-
-#define EVENT_DEBOUNCE_SEC 1
+#include <signal.h>
+#include <sys/types.h>
+#include <sys/wait.h>
 
 #define INPUT_DEV      "/dev/music_input"
-#define SOCKET_PATH    "/tmp/musicd.sock"
 #define MUSIC_DIR      "/usr/share/music"
 #define NUM_SONGS      6
 
+/* Song list */
 static const char *playlist[] = {
-	MUSIC_DIR "/Song1.mp3",
-	MUSIC_DIR "/Song2.mp3",
-	MUSIC_DIR "/Song3.mp3",
-	MUSIC_DIR "/Song4.mp3",
-	MUSIC_DIR "/Song5.mp3",
-	MUSIC_DIR "/Song6.mp3"
+    MUSIC_DIR "/Song1.mp3",
+    MUSIC_DIR "/Song2.mp3",
+    MUSIC_DIR "/Song3.mp3",
+    MUSIC_DIR "/Song4.mp3",
+    MUSIC_DIR "/Song5.mp3",
+    MUSIC_DIR "/Song6.mp3"
 };
 
 static int running = 1;
 static int current_song = 0;
-static pid_t mpg123_pid = -1;
-static int mpg123_stdin = -1;
+static int current_volume = 75;
 static int is_playing = 0;
-static int is_paused = 0;
+static int is_paused  = 0;
+static pid_t mpg_pid  = -1;
+
+/* Mute state */
+static int is_muted = 0;
+static int volume_before_mute = 75;
+
+/* simple debounce in userspace: ignore events within 200 ms */
+static unsigned long last_event_ms = 0;
 
 static void handle_sigint(int sig)
 {
-	(void)sig;
-	running = 0;
+    (void)sig;
+    running = 0;
 }
 
-static void sigchld_handler(int sig)
-{
-	int status;
-	pid_t pid;
-	
-	(void)sig;
-	while ((pid = waitpid(-1, &status, WNOHANG)) > 0) {
-		if (pid == mpg123_pid) {
-			if (mpg123_stdin >= 0) {
-				close(mpg123_stdin);
-				mpg123_stdin = -1;
-			}
-			mpg123_pid = -1;
-			is_playing = 0;
-			is_paused = 0;
-			printf("music_daemon: song finished\n");
-			/* Auto-advance */
-			current_song = (current_song + 1) % NUM_SONGS;
-		}
-	}
-}
-
-static int setup_unix_socket(void)
-{
-	int fd;
-	struct sockaddr_un addr;
-
-	unlink(SOCKET_PATH);
-
-	fd = socket(AF_UNIX, SOCK_DGRAM, 0);
-	if (fd < 0) {
-		perror("socket");
-		return -1;
-	}
-
-	memset(&addr, 0, sizeof(addr));
-	addr.sun_family = AF_UNIX;
-	strncpy(addr.sun_path, SOCKET_PATH, sizeof(addr.sun_path) - 1);
-
-	if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-		perror("bind");
-		close(fd);
-		return -1;
-	}
-
-	chmod(SOCKET_PATH, 0666);
-	return fd;
-}
-
-static void notify_clients(int sockfd, const char *msg)
-{
-	if (sockfd < 0)
-		return;
-	sendto(sockfd, msg, strlen(msg), 0, NULL, 0);
-}
-
-static void send_mpg123_command(const char *cmd)
-{
-	if (mpg123_stdin < 0 || mpg123_pid <= 0)
-		return;
-	
-	write(mpg123_stdin, cmd, strlen(cmd));
-	write(mpg123_stdin, "\n", 1);
-}
-
-static void stop_playback(void)
-{
-	if (mpg123_pid > 0) {
-		send_mpg123_command("QUIT");
-		sleep(1); /* Give it time to quit gracefully */
-		kill(mpg123_pid, SIGTERM);
-		waitpid(mpg123_pid, NULL, 0);
-		mpg123_pid = -1;
-	}
-	if (mpg123_stdin >= 0) {
-		close(mpg123_stdin);
-		mpg123_stdin = -1;
-	}
-	is_playing = 0;
-	is_paused = 0;
-}
-
+/* Start mpg123 in foreground for current song */
 static void start_playback(void)
 {
-	int pipe_fd[2];
-	
-	if (mpg123_pid > 0)
-		return; /* Already running */
-	
-	if (pipe(pipe_fd) < 0) {
-		perror("pipe");
-		return;
-	}
-	
-	mpg123_pid = fork();
-	if (mpg123_pid == 0) {
-		/* Child process */
-		dup2(pipe_fd[0], STDIN_FILENO);
-		close(pipe_fd[0]);
-		close(pipe_fd[1]);
-		
-		execl("/usr/bin/mpg123", "mpg123", 
-		      "-R",  /* Remote control mode */
-		      "-a", "hw:0,0",
-		      (char *)NULL);
-		perror("execl mpg123 failed");
-		exit(1);
-	}
-	
-	/* Parent */
-	close(pipe_fd[0]);
-	mpg123_stdin = pipe_fd[1];
-	
-	/* Load and play the song */
-	char cmd[256];
-	snprintf(cmd, sizeof(cmd), "LOAD %s", playlist[current_song]);
-	send_mpg123_command(cmd);
-	
-	is_playing = 1;
-	is_paused = 0;
-	printf("music_daemon: playing %s\n", playlist[current_song]);
+    if (mpg_pid > 0) {
+        /* Already have a player process (playing or paused) */
+        return;
+    }
+
+    mpg_pid = fork();
+    if (mpg_pid == 0) {
+        execl("/usr/bin/mpg123", "mpg123",
+              "-q",
+              playlist[current_song],
+              (char *)NULL);
+        perror("execl mpg123");
+        _exit(1);
+    }
+
+    is_playing = 1;
+    is_paused  = 0;
+    printf("music_daemon: playing song %d: %s\n",
+           current_song, playlist[current_song]);
 }
 
-static void pause_playback(void)
+/* Stop playback completely */
+static void stop_playback(void)
 {
-	if (mpg123_pid <= 0 || !is_playing)
-		return;
-	
-	send_mpg123_command("PAUSE");
-	is_paused = 1;
-	printf("music_daemon: paused\n");
+    if (mpg_pid > 0) {
+        kill(mpg_pid, SIGTERM);
+        waitpid(mpg_pid, NULL, 0);
+        mpg_pid = -1;
+    }
+    is_playing = 0;
+    is_paused  = 0;
+    printf("music_daemon: stopped\n");
 }
 
-static void resume_playback(void)
+/* Button logic: play/pause with resume */
+static void handle_playpause(void)
 {
-	if (mpg123_pid <= 0)
-		return;
-	
-	if (is_paused) {
-		send_mpg123_command("PAUSE"); /* Toggle pause off */
-		is_paused = 0;
-		printf("music_daemon: resumed\n");
-	}
+    int status;
+
+    /* First, see if the player already exited */
+    if (mpg_pid > 0) {
+        pid_t r = waitpid(mpg_pid, &status, WNOHANG);
+        if (r == mpg_pid) {
+            /* Child is gone, reset state */
+            mpg_pid    = -1;
+            is_playing = 0;
+            is_paused  = 0;
+        }
+    }
+
+    /* If nothing is running now, just start playback from beginning */
+    if (mpg_pid <= 0) {
+        start_playback();
+        return;
+    }
+
+    /* We have a live mpg123 process: do real pause/resume */
+    if (is_playing && !is_paused) {
+        /* Pause in place */
+        if (kill(mpg_pid, SIGSTOP) == 0) {
+            is_paused  = 1;
+            is_playing = 0;
+            printf("music_daemon: paused\n");
+        } else {
+            /* If pause fails, treat as dead and start fresh */
+            perror("SIGSTOP mpg123");
+            mpg_pid    = -1;
+            is_playing = 0;
+            is_paused  = 0;
+            start_playback();
+        }
+    } else if (is_paused) {
+        /* Resume from where we paused */
+        if (kill(mpg_pid, SIGCONT) == 0) {
+            is_paused  = 0;
+            is_playing = 1;
+            printf("music_daemon: resumed\n");
+        } else {
+            /* If resume fails, restart song from beginning */
+            perror("SIGCONT mpg123");
+            mpg_pid    = -1;
+            is_playing = 0;
+            is_paused  = 0;
+            start_playback();
+        }
+    } else {
+        /* Fallback: start playback if our flags somehow got inconsistent */
+        start_playback();
+    }
 }
 
-static void handle_play_pause(int sockfd)
+static void handle_next(void)
 {
-	if (mpg123_pid <= 0) {
-		/* Not running, start playback */
-		start_playback();
-		notify_clients(sockfd, "PLAYING\n");
-	} else if (is_paused) {
-		/* Paused, resume */
-		resume_playback();
-		notify_clients(sockfd, "PLAYING\n");
-	} else {
-		/* Playing, pause */
-		pause_playback();
-		notify_clients(sockfd, "PAUSED\n");
-	}
+    stop_playback();
+    current_song = (current_song + 1) % NUM_SONGS;
+    printf("music_daemon: next -> song %d\n", current_song);
+    start_playback();
 }
 
-static void handle_next(int sockfd)
+static void handle_prev(void)
 {
-	stop_playback();
-	current_song = (current_song + 1) % NUM_SONGS;
-	start_playback();
-	notify_clients(sockfd, "NEXT_SONG\n");
+    stop_playback();
+    current_song = (current_song == 0) ? (NUM_SONGS - 1)
+                                       : (current_song - 1);
+    printf("music_daemon: prev -> song %d\n", current_song);
+    start_playback();
 }
 
-static void handle_prev(int sockfd)
+/* Hardware volume via amixer */
+static void set_volume(int v)
 {
-	stop_playback();
-	if (current_song == 0)
-		current_song = NUM_SONGS - 1;
-	else
-		current_song = current_song - 1;
-	start_playback();
-	notify_clients(sockfd, "PREV_SONG\n");
+    if (v < 0) v = 0;
+    if (v > 100) v = 100;
+
+    current_volume = v;
+
+    char cmd[128];
+    snprintf(cmd, sizeof(cmd),
+             "amixer -c 0 sset 'PCM' %d%% >/dev/null 2>&1", v);
+    system(cmd);
+
+    printf("music_daemon: volume=%d%%\n", v);
+}
+
+static void volume_up(void)
+{
+    set_volume(current_volume + 5);
+}
+
+static void volume_down(void)
+{
+    set_volume(current_volume - 5);
+}
+
+/* Encoder button: mute toggle */
+static void toggle_mute(void)
+{
+    if (!is_muted) {
+        volume_before_mute = current_volume;
+        set_volume(0);
+        is_muted = 1;
+        printf("music_daemon: muted\n");
+    } else {
+        set_volume(volume_before_mute);
+        is_muted = 0;
+        printf("music_daemon: unmuted\n");
+    }
 }
 
 int main(void)
 {
-	int fd_input;
-	int sockfd;
-	struct pollfd pfds[1];
-	char event;
-	time_t last_event_time = 0;
+    int fd = open(INPUT_DEV, O_RDONLY);
+    if (fd < 0) {
+        perror("open /dev/music_input");
+        return 1;
+    }
 
-	signal(SIGINT, handle_sigint);
-	signal(SIGTERM, handle_sigint);
-	signal(SIGCHLD, sigchld_handler);
+    printf("music_daemon: started (pause/resume mode)\n");
 
-	fd_input = open(INPUT_DEV, O_RDONLY);
-	if (fd_input < 0) {
-		perror("open " INPUT_DEV);
-		return 1;
-	}
+    signal(SIGINT, handle_sigint);
+    signal(SIGTERM, handle_sigint);
 
-	sockfd = setup_unix_socket();
+    set_volume(current_volume);
 
-	printf("music_daemon: started, listening on %s and %s\n",
-	       INPUT_DEV, SOCKET_PATH);
+    struct pollfd pfd;
+    pfd.fd = fd;
+    pfd.events = POLLIN;
 
-	pfds[0].fd = fd_input;
-	pfds[0].events = POLLIN;
+    char ev;
 
-	while (running) {
-		int ret = poll(pfds, 1, 1000);
-		if (ret < 0) {
-			if (errno == EINTR)
-				continue;
-			perror("poll");
-			break;
-		}
+    while (running) {
+        int r = poll(&pfd, 1, 200);
+        if (r < 0) {
+            if (errno == EINTR)
+                continue;
+            perror("poll");
+            break;
+        }
 
-		if (ret == 0) {
-			if (!is_playing && mpg123_pid == -1) {
-				start_playback();
-			}
-			continue;
-		}
+        if (r == 0)
+            continue;
 
-		if (pfds[0].revents & POLLIN) {
-			ret = read(fd_input, &event, 1);
-			if (ret == 1) {
-				time_t now = time(NULL);
-				if (now - last_event_time < 1) {
-					printf("music_daemon: ignoring rapid press\n");
-					continue;
-				}
-				last_event_time = now;
+        if (pfd.revents & POLLIN) {
+            if (read(fd, &ev, 1) == 1) {
 
-				printf("music_daemon: button event '%c'\n", event);
-				notify_clients(sockfd, "BUTTON_EVENT\n");
+                /* debounce all events: ignore anything within 200ms */
+                struct timespec ts;
+                clock_gettime(CLOCK_MONOTONIC, &ts);
+                unsigned long now_ms =
+                    ts.tv_sec * 1000UL + ts.tv_nsec / 1000000UL;
 
-				switch (event) {
-				case 'P':
-					handle_play_pause(sockfd);
-					break;
-				case 'N':
-					handle_next(sockfd);
-					break;
-				case 'R':
-					handle_prev(sockfd);
-					break;
-				default:
-					printf("music_daemon: unknown event\n");
-				}
-			}
-		}
-	}
+                if (now_ms - last_event_ms < 200) {
+                    continue;
+                }
+                last_event_ms = now_ms;
 
-	printf("music_daemon: shutting down\n");
-	stop_playback();
-	if (sockfd >= 0) {
-		close(sockfd);
-		unlink(SOCKET_PATH);
-	}
-	close(fd_input);
-	return 0;
+                switch (ev) {
+                case 'P': handle_playpause(); break;
+                case 'N': handle_next();      break;
+                case 'R': handle_prev();      break;
+                case 'U': volume_up();        break;
+                case 'D': volume_down();      break;
+                case 'M': toggle_mute();      break;
+                default:
+                    printf("music_daemon: unknown event %c\n", ev);
+                }
+            }
+        }
+    }
+
+    stop_playback();
+    close(fd);
+    printf("music_daemon: exiting cleanly\n");
+    return 0;
 }

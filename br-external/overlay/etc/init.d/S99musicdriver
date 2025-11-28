@@ -1,34 +1,63 @@
 #!/bin/sh
 
+### BEGIN INIT INFO
+# Provides:          musicdriver
+# Required-Start:    $local_fs
+# Required-Stop:
+# Default-Start:     3 5
+# Default-Stop:      0 1 2 6
+# Short-Description: Load audio + music input driver + music daemon
+### END INIT INFO
+
+DEVICE=/dev/music_input
+DRIVER=music_input_driver
+DAEMON=/usr/bin/music_daemon
+PIDFILE=/var/run/music_daemon.pid
+
 case "$1" in
   start)
-    printf "Loading music driver: "
-    insmod /lib/modules/6.6.78-v8/extra/music_input_driver.ko
-    echo "OK"
-    
-    sleep 1
-    
-    printf "Starting music daemon: "
-    start-stop-daemon -S -b -m -p /var/run/music_daemon.pid \
-        -x /usr/bin/music_daemon
-    echo "OK"
+    echo "Loading audio driver..."
+    modprobe snd-bcm2835
+
+    echo "Loading music input driver..."
+    insmod /lib/modules/$(uname -r)/extra/music_input_driver.ko 2>/dev/null
+
+    # Wait for /dev/music_input to appear
+    for i in 1 2 3 4 5; do
+        [ -e "$DEVICE" ] && break
+        sleep 0.4
+    done
+
+    if [ ! -e "$DEVICE" ]; then
+        echo "ERROR: $DEVICE not created — driver load failed!"
+        exit 1
+    fi
+
+    echo "Starting music daemon..."
+    start-stop-daemon -S -b -m -p $PIDFILE -x $DAEMON
+
+    echo "Music system started."
     ;;
+
   stop)
-    printf "Stopping music daemon: "
-    start-stop-daemon -K -p /var/run/music_daemon.pid
-    echo "OK"
-    
-    printf "Unloading music driver: "
-    rmmod music_input_driver
-    echo "OK"
+    echo "Stopping music daemon..."
+    start-stop-daemon -K -p $PIDFILE
+
+    echo "Unloading input driver..."
+    rmmod $DRIVER
     ;;
+
   restart|reload)
-    "$0" stop
-    "$0" start
+    $0 stop
+    sleep 1
+    $0 start
     ;;
+
   *)
     echo "Usage: $0 {start|stop|restart}"
     exit 1
+    ;;
 esac
 
 exit 0
+

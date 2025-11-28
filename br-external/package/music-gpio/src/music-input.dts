@@ -1,31 +1,40 @@
 /dts-v1/;
 /plugin/;
+
 / {
     compatible = "brcm,bcm2711";
-    
+
     fragment@0 {
         target = <&gpio>;
         __overlay__ {
             button_pins: button_pins {
-                brcm,pins = <17 27 22>;
-                brcm,function = <0>;
-                brcm,pull = <2>;
+                brcm,pins = <17 27 22 5 6 13>;
+                brcm,function = <0>;   // input
+                brcm,pull = <2>;       // pull-up
             };
         };
     };
-    
+
     fragment@1 {
         target-path = "/soc";
         __overlay__ {
-            music_input {
+            music_input: music_input@0 {
                 compatible = "music-input-device";
+
                 pinctrl-names = "default";
                 pinctrl-0 = <&button_pins>;
-                play-gpios = <&gpio 17 0>;
-                next-gpios = <&gpio 27 0>;
-                prev-gpios = <&gpio 22 0>;
+
+                play-gpios        = <&gpio 17 1>;
+                next-gpios        = <&gpio 27 1>;
+                prev-gpios        = <&gpio 22 1>;
+
+                encoder-clk-gpios = <&gpio 5 1>;
+                encoder-dt-gpios  = <&gpio 6 1>;
+                encoder-sw-gpios  = <&gpio 13 1>;
+
                 status = "okay";
             };
         };
     };
 };
+

@@ -13,7 +13,7 @@
 #include <linux/wait.h>
 
 #define DRV_NAME "music_input"
-#define DEBOUNCE_MS 200
+#define DEBOUNCE_MS 300
 #define EVENT_BUF_SIZE 32
 
 static unsigned long last_play_time = 0;
@@ -31,6 +31,18 @@ static struct gpio_desc *prev_gpiod;
 static int play_irq = -1;
 static int next_irq = -1;
 static int prev_irq = -1;
+
+
+/* Encoder GPIOs */
+static struct gpio_desc *encoder_clk_gpiod;
+static struct gpio_desc *encoder_dt_gpiod;
+static struct gpio_desc *encoder_sw_gpiod;
+static int encoder_clk_irq = -1;
+static int encoder_sw_irq = -1;
+
+/* Encoder state */
+static unsigned long last_encoder_time = 0;
+static int last_clk_state = 1;
 
 /* Event queue */
 static char event_buffer[EVENT_BUF_SIZE];
@@ -127,6 +139,68 @@ static const struct file_operations mid_fops = {
     .read = mid_read,
 };
 
+
+static irqreturn_t encoder_clk_isr(int irq, void *data)
+{
+    unsigned long now = jiffies;
+    int clk_state, dt_state;
+
+    /* 5 ms debounce for the rotary encoder */
+    if (!time_after(now, last_encoder_time + msecs_to_jiffies(40)))
+        return IRQ_HANDLED;
+
+    last_encoder_time = now;
+
+    /* Read the current pin states */
+    clk_state = gpiod_get_value(encoder_clk_gpiod);
+    dt_state  = gpiod_get_value(encoder_dt_gpiod);
+
+    /*
+     * We detect the FALLING edge on CLK.
+     *
+     * Because:
+     *   - KY-040 is mechanically noisy
+     *   - Falling edge decoding gives the cleanest directional signal
+     *   - Active-low pins mean "0" = pressed/low level
+     *
+     * last_clk_state = 1 → high
+     * clk_state      = 0 → falling edge (high → low)
+     */
+    if (last_clk_state == 1 && clk_state == 0) {
+
+        /* Direction:
+         * If DT == 1 → clockwise → volume up
+         * If DT == 0 → counter-clockwise → volume down
+         */
+        if (dt_state) {
+            pr_info("%s: VOLUME UP\n", DRV_NAME);
+            queue_event('U');
+        } else {
+            pr_info("%s: VOLUME DOWN\n", DRV_NAME);
+            queue_event('D');
+        }
+    }
+
+    /* Remember the last CLK state */
+    last_clk_state = clk_state;
+
+    return IRQ_HANDLED;
+}
+
+static irqreturn_t encoder_sw_isr(int irq, void *data)
+{
+    unsigned long now = jiffies;
+    static unsigned long last_sw_time = 0;
+    
+    if (time_after(now, last_sw_time + msecs_to_jiffies(DEBOUNCE_MS))) {
+        last_sw_time = now;
+        pr_info("%s: ENCODER BUTTON pressed\n", DRV_NAME);
+        queue_event('M'); // M for Mute toggle
+    }
+    
+    return IRQ_HANDLED;
+}
+
 static int music_input_probe(struct platform_device *pdev)
 {
     int ret;
@@ -161,24 +235,11 @@ static int music_input_probe(struct platform_device *pdev)
         goto err_dev;
     }
 
+    /* Setup play button */
     play_gpiod = devm_gpiod_get(dev, "play", GPIOD_IN);
     if (IS_ERR(play_gpiod)) {
         dev_err(dev, "Failed to get play-gpios\n");
         ret = PTR_ERR(play_gpiod);
-        goto err_gpio;
-    }
-
-    next_gpiod = devm_gpiod_get(dev, "next", GPIOD_IN);
-    if (IS_ERR(next_gpiod)) {
-        dev_err(dev, "Failed to get next-gpios\n");
-        ret = PTR_ERR(next_gpiod);
-        goto err_gpio;
-    }
-
-    prev_gpiod = devm_gpiod_get(dev, "prev", GPIOD_IN);
-    if (IS_ERR(prev_gpiod)) {
-        dev_err(dev, "Failed to get prev-gpios\n");
-        ret = PTR_ERR(prev_gpiod);
         goto err_gpio;
     }
 
@@ -188,11 +249,20 @@ static int music_input_probe(struct platform_device *pdev)
         ret = play_irq;
         goto err_gpio;
     }
+
     ret = devm_request_irq(dev, play_irq, play_isr,
                            IRQF_TRIGGER_FALLING,
                            "play_btn", NULL);
     if (ret) {
         dev_err(dev, "play request_irq failed\n");
+        goto err_gpio;
+    }
+
+    /* Setup next button */
+    next_gpiod = devm_gpiod_get(dev, "next", GPIOD_IN);
+    if (IS_ERR(next_gpiod)) {
+        dev_err(dev, "Failed to get next-gpios\n");
+        ret = PTR_ERR(next_gpiod);
         goto err_gpio;
     }
 
@@ -202,11 +272,20 @@ static int music_input_probe(struct platform_device *pdev)
         ret = next_irq;
         goto err_gpio;
     }
+
     ret = devm_request_irq(dev, next_irq, next_isr,
                            IRQF_TRIGGER_FALLING,
                            "next_btn", NULL);
     if (ret) {
         dev_err(dev, "next request_irq failed\n");
+        goto err_gpio;
+    }
+
+    /* Setup prev button */
+    prev_gpiod = devm_gpiod_get(dev, "prev", GPIOD_IN);
+    if (IS_ERR(prev_gpiod)) {
+        dev_err(dev, "Failed to get prev-gpios\n");
+        ret = PTR_ERR(prev_gpiod);
         goto err_gpio;
     }
 
@@ -216,6 +295,7 @@ static int music_input_probe(struct platform_device *pdev)
         ret = prev_irq;
         goto err_gpio;
     }
+
     ret = devm_request_irq(dev, prev_irq, prev_isr,
                            IRQF_TRIGGER_FALLING,
                            "prev_btn", NULL);
@@ -224,9 +304,66 @@ static int music_input_probe(struct platform_device *pdev)
         goto err_gpio;
     }
 
+    /* Setup encoder CLK pin */
+    encoder_clk_gpiod = devm_gpiod_get(dev, "encoder-clk", GPIOD_IN);
+    if (IS_ERR(encoder_clk_gpiod)) {
+        dev_err(dev, "Failed to get encoder-clk-gpios\n");
+        ret = PTR_ERR(encoder_clk_gpiod);
+        goto err_gpio;
+    }
+
+    encoder_clk_irq = gpiod_to_irq(encoder_clk_gpiod);
+    if (encoder_clk_irq < 0) {
+        dev_err(dev, "encoder clk gpiod_to_irq failed\n");
+        ret = encoder_clk_irq;
+        goto err_gpio;
+    }
+
+    ret = devm_request_irq(dev, encoder_clk_irq, encoder_clk_isr,
+                           IRQF_TRIGGER_FALLING | IRQF_TRIGGER_RISING,
+                           "encoder_clk", NULL);
+    if (ret) {
+        dev_err(dev, "encoder clk request_irq failed\n");
+        goto err_gpio;
+    }
+
+    /* Setup encoder DT pin (no interrupt, just read state) */
+    encoder_dt_gpiod = devm_gpiod_get(dev, "encoder-dt", GPIOD_IN);
+    if (IS_ERR(encoder_dt_gpiod)) {
+        dev_err(dev, "Failed to get encoder-dt-gpios\n");
+        ret = PTR_ERR(encoder_dt_gpiod);
+        goto err_gpio;
+    }
+
+    /* Setup encoder SW (button) pin */
+    encoder_sw_gpiod = devm_gpiod_get(dev, "encoder-sw", GPIOD_IN);
+    if (IS_ERR(encoder_sw_gpiod)) {
+        dev_err(dev, "Failed to get encoder-sw-gpios\n");
+        ret = PTR_ERR(encoder_sw_gpiod);
+        goto err_gpio;
+    }
+
+    encoder_sw_irq = gpiod_to_irq(encoder_sw_gpiod);
+    if (encoder_sw_irq < 0) {
+        dev_err(dev, "encoder sw gpiod_to_irq failed\n");
+        ret = encoder_sw_irq;
+        goto err_gpio;
+    }
+
+    ret = devm_request_irq(dev, encoder_sw_irq, encoder_sw_isr,
+                           IRQF_TRIGGER_FALLING,
+                           "encoder_sw", NULL);
+    if (ret) {
+        dev_err(dev, "encoder sw request_irq failed\n");
+        goto err_gpio;
+    }
+
+    /* Initialize encoder CLK state */
+    last_clk_state = gpiod_get_value(encoder_clk_gpiod);
+
     platform_set_drvdata(pdev, mid_dev);
 
-    dev_info(dev, "3-button driver with event queue loaded\n");
+    dev_info(dev, "3-button + encoder driver with event queue loaded\n");
     return 0;
 
 err_gpio:
