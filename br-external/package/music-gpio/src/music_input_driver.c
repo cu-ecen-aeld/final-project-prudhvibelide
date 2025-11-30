@@ -51,6 +51,11 @@ static int buf_tail = 0;
 static DEFINE_SPINLOCK(buf_lock);
 static DECLARE_WAIT_QUEUE_HEAD(read_wait);
 
+/* Cloud Mode */
+static struct gpio_desc *cloud_gpiod;
+static int cloud_irq = -1;
+static unsigned long last_cloud_time = 0;
+
 static void queue_event(char event)
 {
     unsigned long flags;
@@ -64,6 +69,17 @@ static void queue_event(char event)
     }
     
     spin_unlock_irqrestore(&buf_lock, flags);
+}
+
+static irqreturn_t cloud_isr(int irq, void *data)
+{
+    unsigned long now = jiffies;
+    if (time_after(now, last_cloud_time + msecs_to_jiffies(DEBOUNCE_MS))) {
+        last_cloud_time = now;
+        pr_info("%s: CLOUD/LOCAL toggle pressed\n", DRV_NAME);
+        queue_event('C');
+    }
+    return IRQ_HANDLED;
 }
 
 static irqreturn_t play_isr(int irq, void *data)
@@ -303,6 +319,30 @@ static int music_input_probe(struct platform_device *pdev)
         dev_err(dev, "prev request_irq failed\n");
         goto err_gpio;
     }
+    
+    
+    /* Setup cloud toggle button */
+	cloud_gpiod = devm_gpiod_get(dev, "cloud", GPIOD_IN);
+	if (IS_ERR(cloud_gpiod)) {
+  	  dev_err(dev, "Failed to get cloud-gpios\n");
+    	  ret = PTR_ERR(cloud_gpiod);
+   	 goto err_gpio;
+	}
+
+	cloud_irq = gpiod_to_irq(cloud_gpiod);
+	if (cloud_irq < 0) {
+ 	   dev_err(dev, "cloud gpiod_to_irq failed\n");
+  	  ret = cloud_irq;
+  	  goto err_gpio;
+	}
+
+	ret = devm_request_irq(dev, cloud_irq, cloud_isr,
+                       IRQF_TRIGGER_FALLING,
+                       "cloud_btn", NULL);
+	if (ret) {
+   	 dev_err(dev, "cloud request_irq failed\n");
+   	 goto err_gpio;
+	}
 
     /* Setup encoder CLK pin */
     encoder_clk_gpiod = devm_gpiod_get(dev, "encoder-clk", GPIOD_IN);
@@ -409,3 +449,4 @@ MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Prudhvi Raj Belide");
 MODULE_DESCRIPTION("3-button music input with event queue");
 MODULE_ALIAS("platform:music_input");
+

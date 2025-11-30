@@ -8,7 +8,7 @@
         target = <&gpio>;
         __overlay__ {
             button_pins: button_pins {
-                brcm,pins = <17 27 22 5 6 13>;
+                brcm,pins = <17 27 22 5 6 13 26>;
                 brcm,function = <0>;   // input
                 brcm,pull = <2>;       // pull-up
             };
@@ -31,6 +31,8 @@
                 encoder-clk-gpios = <&gpio 5 1>;
                 encoder-dt-gpios  = <&gpio 6 1>;
                 encoder-sw-gpios  = <&gpio 13 1>;
+                
+                cloud-gpios = <&gpio 26 1>; 
 
                 status = "okay";
             };
