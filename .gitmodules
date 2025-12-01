@@ -1,0 +1,3 @@
+[submodule "buildroot"]
+	path = buildroot
+	url = git@github.com:prudhvibelide/final-project-buildroot.git
