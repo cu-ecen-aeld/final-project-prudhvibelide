@@ -1,11 +1,17 @@
-/* music_daemon.c
- * AESD Final Project 
- * Local MP3 playback
- * Cloud streaming mode
- * HDMI Text UI (TTY1)
- * Socket Programming Control (HTTP server on port 8888)
- * FINAL STABLE VERSION – DEC 1
- * TEST_STRING: FINAL_BUILD_999
+/*
+ * music_daemon.c
+ *
+ * AESD Final Project – Raspberry Pi Music Player Daemon
+ *
+ * Features:
+ *   - Local MP3 playback from SD card
+ *   - Cloud streaming mode (HTTP streaming of MP3s)
+ *   - HDMI text-based UI on TTY1
+ *   - HTTP remote control interface on port 8888
+ *
+ * Build/Author information for demo/debug:
+ *   - FINAL STABLE VERSION – DEC 2
+ *   - AUTHOR : PRUDHVI RAJ BELIDE
  */
 
 #include <stdio.h>
@@ -27,15 +33,16 @@
 /*                        CONSTANTS                        */
 /* ------------------------------------------------------- */
 
-#define INPUT_DEV      "/dev/music_input"
-#define MUSIC_DIR      "/usr/share/music"
-#define NUM_SONGS      5
-#define PORT           8888
+#define INPUT_DEV      "/dev/music_input"   /* Character device for physical button input */
+#define MUSIC_DIR      "/usr/share/music"   /* Base directory for local MP3 files        */
+#define NUM_SONGS      5                    /* Number of local songs in the playlist     */
+#define PORT           8888                 /* HTTP control port for remote interface    */
 
 /* ------------------------------------------------------- */
 /*                   LOCAL SONG LIST                       */
 /* ------------------------------------------------------- */
 
+/* Absolute paths to local MP3 files stored on the Pi */
 static const char *playlist[] = {
     MUSIC_DIR "/RunitUp.mp3",
     MUSIC_DIR "/BeatIt.mp3",
@@ -44,7 +51,7 @@ static const char *playlist[] = {
     MUSIC_DIR "/RapGod.mp3"
 };
 
-/* Local titles */
+/* User-friendly local song titles */
 static const char *local_title[] = {
     "Run-it-Up",
     "Beat-it",
@@ -53,7 +60,7 @@ static const char *local_title[] = {
     "Rap-God",
 };
 
-/* Local Artists */
+/* Local artist names matching the titles above */
 static const char *local_artist[] = {
     "Hanumand Kind",
     "Michael Jackson",
@@ -67,6 +74,7 @@ static const char *local_artist[] = {
 /*                   CLOUD SONG LIST                       */
 /* ------------------------------------------------------- */
 
+/* HTTP URLs for cloud-streamed tracks (hosted on GitHub Pages) */
 static const char *cloud_url[] = {
     "https://prudhvibelide.github.io/cloud-music-list/songs/Starboy.mp3",
     "https://prudhvibelide.github.io/cloud-music-list/songs/FEIN.mp3",
@@ -75,6 +83,7 @@ static const char *cloud_url[] = {
     "https://prudhvibelide.github.io/cloud-music-list/songs/STAY.mp3"
 };
 
+/* Display names for cloud songs */
 static const char *cloud_title[] = {
     "Starboy – The Weeknd",
     "FEIN – Travis Scott",
@@ -83,6 +92,7 @@ static const char *cloud_title[] = {
     "STAY – The Kid LAROI & Justin Bieber"
 };
 
+/* Cloud artist names, aligned with cloud_url/cloud_title */
 static const char *cloud_artist[] = {
     "The Weeknd",
     "Travis Scott",
@@ -95,26 +105,28 @@ static const char *cloud_artist[] = {
 /*                   RUNTIME STATE                         */
 /* ------------------------------------------------------- */
 
-static int running = 1;
-static int current_song = 0;
-static int current_volume = 75;
+/* Global state variables controlling playback and UI */
+static int running = 1;                /* Main loop flag */
+static int current_song = 0;           /* Index into local/cloud playlist */
+static int current_volume = 75;        /* Volume percentage (0–100) */
 
 static const char *build_tag = "Music Daemon Build: FINAL_BUILD_999";
 
-static int is_playing = 0;
-static int is_muted = 0;
-static int is_cloud = 0;      /* 0 = Local, 1 = Cloud */
+static int is_playing = 0;             /* 1 = playback active, 0 = stopped */
+static int is_muted = 0;               /* Logical mute state flag */
+static int is_cloud = 0;               /* 0 = Local mode, 1 = Cloud streaming mode */
 
-static pid_t mpg_pid = -1;
-static FILE *display_fp = NULL;
+static pid_t mpg_pid = -1;             /* Child process running mpg123 */
+static FILE *display_fp = NULL;        /* Output stream for HDMI text UI (TTY1 or stdout) */
 
-static int volume_before_mute = 75;
-static unsigned long last_event_ms = 0;
+static int volume_before_mute = 75;    /* Volume snapshot saved when mute is enabled */
+static unsigned long last_event_ms = 0;/* Timestamp used for button debounce (ms) */
 
 /* ------------------------------------------------------- */
 /*             TEXT DISPLAY ON HDMI (TTY1)                 */
 /* ------------------------------------------------------- */
 
+/* Lazily open TTY1 for display output; fallback to stdout if unavailable */
 static void init_display(void)
 {
     if (!display_fp) {
@@ -124,27 +136,31 @@ static void init_display(void)
     }
 }
 
+/* Return the current song title based on mode and index */
 static const char *get_title(void)
 {
     return is_cloud ? cloud_title[current_song % 5]
                     : local_title[current_song];
 }
 
+/* Human-readable playback mode string */
 static const char *mode_text(void)
 {
     return is_cloud ? "Cloud Mode" : "Local Mode";
 }
 
+/* Human-readable playback status string */
 static const char *status_text(void)
 {
     return (mpg_pid > 0) ? "Playing" : "Stopped";
 }
 
+/* Clear and redraw the HDMI status UI with optional extra status text */
 static void draw_status(const char *extra)
 {
     init_display();
 
-    fprintf(display_fp, "\033[2J\033[H");  /* Clear screen */
+    fprintf(display_fp, "\033[2J\033[H");  /* Clear screen and move cursor home */
 
     fprintf(display_fp, "=============================================\n");
     fprintf(display_fp, "         RASPBERRY PI MUSIC PLAYER           \n");
@@ -184,11 +200,13 @@ static void draw_status(const char *extra)
 /*                INTERNAL AUDIO HELPERS                   */
 /* ------------------------------------------------------- */
 
+/* Best-effort kill of any mpg123 processes that might still be running */
 static void kill_all_players(void)
 {
     (void)system("killall -q mpg123 2>/dev/null || true");
 }
 
+/* Clamp and apply volume to ALSA via amixer, then update UI */
 static void set_volume(int v)
 {
     if (v < 0) v = 0;
@@ -202,9 +220,11 @@ static void set_volume(int v)
     draw_status("Volume changed");
 }
 
+/* Relative volume controls used by buttons and HTTP API */
 static void volume_up(void)   { set_volume(current_volume + 5); }
 static void volume_down(void) { set_volume(current_volume - 5); }
 
+/* Toggle mute while remembering the previous volume level */
 static void toggle_mute(void)
 {
     if (!is_muted) {
@@ -223,6 +243,7 @@ static void toggle_mute(void)
 /*                    PLAYBACK CONTROL                     */
 /* ------------------------------------------------------- */
 
+/* Stop current playback process (if any) and clean up state */
 static void stop_playback(void)
 {
     if (mpg_pid > 0) {
@@ -235,6 +256,7 @@ static void stop_playback(void)
     draw_status("Stopped");
 }
 
+/* Fork and start mpg123 for either local or cloud audio source */
 static void start_playback(void)
 {
     if (mpg_pid > 0)
@@ -245,7 +267,7 @@ static void start_playback(void)
     mpg_pid = fork();
     if (mpg_pid == 0) {
 
-        /* child: audio only, close extra FDs */
+        /* Child process: audio playback only, close inherited FDs */
         for (int i = 3; i < 256; i++)
             close(i);
 
@@ -257,6 +279,7 @@ static void start_playback(void)
         } else {
             draw_status("Downloading from GitHub…");
 
+            /* Stream MP3 over HTTP using wget and pipe into mpg123 */
             char cmd[600];
             snprintf(cmd, sizeof(cmd),
                      "/usr/bin/wget -qO- \"%s\" | /usr/bin/mpg123 -q -",
@@ -273,6 +296,7 @@ static void start_playback(void)
     draw_status("Playing");
 }
 
+/* Play/pause toggle used by both buttons and HTTP API */
 static void handle_playpause(void)
 {
     if (is_playing)
@@ -281,6 +305,7 @@ static void handle_playpause(void)
         start_playback();
 }
 
+/* Advance to the next track in the list and start playback */
 static void handle_next(void)
 {
     stop_playback();
@@ -288,6 +313,7 @@ static void handle_next(void)
     start_playback();
 }
 
+/* Go back to the previous track and start playback */
 static void handle_prev(void)
 {
     stop_playback();
@@ -295,7 +321,7 @@ static void handle_prev(void)
     start_playback();
 }
 
-/* ORIGINAL COMMENT KEPT */
+/* Toggle between local and cloud mode and keep index in range */
 static void toggle_mode(void)
 {
     is_cloud = !is_cloud;
@@ -318,6 +344,7 @@ static void toggle_mode(void)
 
 static int server_fd = -1;
 
+/* Send a simple text-based HTTP 200 response with CORS enabled */
 static void send_response(int fd, const char *msg)
 {
     char header[512];
@@ -330,6 +357,7 @@ static void send_response(int fd, const char *msg)
     send(fd, header, strlen(header), 0);
 }
 
+/* Serve a minimal HTML control page for testing in a browser */
 static void send_html(int fd)
 {
     const char *html =
@@ -354,7 +382,7 @@ static void send_html(int fd)
     send(fd, resp, strlen(resp), 0);
 }
 
-/* simple HTTP request handler with /local socket demo */
+/* Basic HTTP parser that maps paths to player control actions */
 static void handle_http_request(int fd)
 {
     char buf[1024];
@@ -364,13 +392,13 @@ static void handle_http_request(int fd)
 
     buf[n] = '\0';
 
-    /* debug endpoint */
+    /* Lightweight debug endpoint to test connectivity */
     if (strncmp(buf, "GET /test", 9) == 0) {
         send_response(fd, "OK\n");
         return;
     }
 
-    /* basic remote controls (no playlist change) */
+    /* Map HTTP paths to transport and playback operations */
     if (strncmp(buf, "GET /play", 9) == 0)          handle_playpause();
     else if (strncmp(buf, "GET /pause", 10) == 0)    handle_playpause();
     else if (strncmp(buf, "GET /next", 9) == 0)      handle_next();
@@ -380,39 +408,12 @@ static void handle_http_request(int fd)
     else if (strncmp(buf, "GET /mute", 9) == 0)      toggle_mute();
     else if (strncmp(buf, "GET /mode", 9) == 0)      toggle_mode();
 
-    /* SOCKET DEMO: /local?song=N → play SD-card track N (direct mpg123) */
-   /* else if (strncmp(buf, "GET /local", 10) == 0) {
-
-        int id = 0;
-        char *p = strstr(buf, "song=");
-
-        if (p) {
-            id = atoi(p + 5);
-            if (id < 0 || id >= NUM_SONGS)
-                id = 0;
-        }
-
-        is_cloud = 0;
-        current_song = id;
-        is_playing = 1;
-        last_event_ms = 0;
-
-        draw_status("HTTP: Local song request");
-
-        // kill any existing audio and play selected track via system() 
-        char cmd[512];
-        snprintf(cmd, sizeof(cmd),
-                 "/usr/bin/killall -q mpg123 2>/dev/null; "
-                 "/usr/bin/mpg123 -q \"%s\" &",
-                 playlist[id]);
-
-        (void)system(cmd);
-
-        send_response(fd, "OK\n");
-        return;
-    }*/
-    
-  
+    /*
+     * HTTP endpoint: /local?song=N
+     * Switches to local mode and starts playing the requested track index N.
+     * Demonstrates socket-based control that integrates cleanly with
+     * the existing state machine (buttons + HTTP share the same path).
+     */
   else if (strncmp(buf, "GET /local", 10) == 0) {
     int id = 0;
     char *p = strstr(buf, "song=");
@@ -423,16 +424,16 @@ static void handle_http_request(int fd)
             id = 0;
     }
 
-    /* Make this a normal LOCAL playback request */
-    is_cloud = 0;          /* force local / SD-card mode        */
-    current_song = id;     /* update internal index for buttons */
-    last_event_ms = 0;     /* don't let debounce block this     */
+    /* Treat /local as a normal local playback request through the daemon */
+    is_cloud = 0;          /* Force local mode (SD-card / local playlist)     */
+    current_song = id;     /* Update internal index so physical controls work */
+    last_event_ms = 0;     /* Reset debounce window for immediate response    */
 
-    /* Stop any current playback and start the chosen track */
+    /* Use the existing stop/start helpers for a clean transition */
     stop_playback();
     start_playback();
 
-    /* Update HDMI text to say this came from socket */
+    /* Indicate on HDMI that this action was triggered via HTTP socket */
     draw_status("SOCKET: Playing local song via /local");
 
     char resp[256];
@@ -457,10 +458,11 @@ static void handle_http_request(int fd)
         return;
     }
 
-    /* fallback */
+    /* Default response for unrecognized paths */
     send_response(fd, "OK\n");
 }
 
+/* Create and configure a simple blocking HTTP server socket */
 static void start_http_server(void)
 {
     struct sockaddr_in addr;
@@ -485,20 +487,24 @@ static void start_http_server(void)
 }
 
 /* ------------------------------------------------------- */
-/*                          MAIN                            */
+/*                          MAIN                           */
 /* ------------------------------------------------------- */
 
 int main(void)
 {
+    /* Open the input device that delivers physical button events */
     int fd = open(INPUT_DEV, O_RDONLY);
     if (fd < 0) { perror("open /dev/music_input"); return 1; }
 
+    /* Allow default handling for SIGINT/SIGTERM (systemd or shell can stop us) */
     signal(SIGINT, SIG_DFL);
     signal(SIGTERM, SIG_DFL);
 
+    /* Initialize audio and user interface state */
     set_volume(current_volume);
     draw_status("Idle");
 
+    /* Spin up the HTTP control server (non-blocking via poll) */
     start_http_server();
 
     struct pollfd pfd[2];
@@ -510,10 +516,11 @@ int main(void)
     char ev;
 
     while (running) {
+        /* Wait for either a button press or an incoming HTTP connection */
         int r = poll(pfd, 2, 200);
         if (r < 0) continue;
 
-        /* Physical buttons */
+        /* Handle physical button input from /dev/music_input */
         if (pfd[0].revents & POLLIN) {
             if (read(fd, &ev, 1) == 1) {
 
@@ -521,6 +528,7 @@ int main(void)
                 clock_gettime(CLOCK_MONOTONIC, &ts);
                 unsigned long now = ts.tv_sec * 1000 + ts.tv_nsec/1000000UL;
 
+                /* Simple software debounce: ignore events that are too close */
                 if (now - last_event_ms < 200) continue;
                 last_event_ms = now;
 
@@ -537,7 +545,7 @@ int main(void)
             }
         }
 
-        /* HTTP client */
+        /* Handle new HTTP clients on the control port */
         if (pfd[1].revents & POLLIN) {
             int cfd = accept(server_fd, NULL, NULL);
             if (cfd >= 0) {
@@ -547,6 +555,7 @@ int main(void)
         }
     }
 
+    /* Clean shutdown: stop playback, close devices, and release resources */
     stop_playback();
     close(fd);
     if (display_fp != stdout) fclose(display_fp);
