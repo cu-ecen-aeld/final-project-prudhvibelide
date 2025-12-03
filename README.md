@@ -5,6 +5,8 @@ A Embedded Linux music player system demonstrating kernel driver development, de
 > **Course**: Advanced Embedded Software Development (AESD) - Final Project  
 > **Platform**: Raspberry Pi 4 Model B | Custom Buildroot Linux (ARM64) | Linux Kernel 6.6.78-v8
 
+For full project details and documentation, please see the [Project Overview Wiki Page](https://github.com/cu-ecen-aeld/final-project-prudhvibelide/wiki/Project-Overview).
+
 ---
 
 ## Project Overview
@@ -384,3 +386,4 @@ This project builds upon concepts from:
   - System service integration
 
 ---
+
