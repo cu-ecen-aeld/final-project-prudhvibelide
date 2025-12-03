@@ -389,12 +389,4 @@ This project builds upon concepts from:
 
 ## 📝 License
 
-This project was developed as coursework for AESD by #Prudhvi Raj Belide# . Source code and documentation are provided for educational purposes.
-
----
-
-For questions about this project implementation, please open an issue in the repository.
-
----
-
-**Note**: This is an educational project demonstrating embedded Linux development skills including kernel programming, device drivers, system integration, and hardware interfacing.
+This project was developed as part of coursework for AESD by #Prudhvi Raj Belide# . Source code and documentation are provided for educational purposes.
