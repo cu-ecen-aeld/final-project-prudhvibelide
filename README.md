@@ -1,6 +1,6 @@
 # Virtualized Embedded Media Controller for Network-Based Playback
 
-A Embedded Linux music player system demonstrating kernel driver development, device tree integration, socket server implementation, and cloud streaming capabilities on Raspberry Pi 4.
+A Embedded Linux music player system demonstrating kernel driver development, device tree integration, socket server implementation, and system programming on Raspberry Pi 4.
 
 > **Course**: Advanced Embedded Software Development (AESD) - Final Project  
 > **Platform**: Raspberry Pi 4 Model B | Custom Buildroot Linux (ARM64) | Linux Kernel 6.6.78-v8
@@ -386,4 +386,5 @@ This project builds upon concepts from:
   - System service integration
 
 ---
+
 
