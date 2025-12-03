@@ -384,9 +384,3 @@ This project builds upon concepts from:
   - System service integration
 
 ---
-
----
-
-## 📝 License
-
-This project was developed as part of coursework for AESD by #Prudhvi Raj Belide# . Source code and documentation are provided for educational purposes.
