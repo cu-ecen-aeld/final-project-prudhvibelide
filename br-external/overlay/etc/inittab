@@ -1,0 +1,14 @@
+# /etc/inittab
+::sysinit:/etc/init.d/rcS
+# Put a getty on the serial port
+console::respawn:/sbin/getty -L console 0 vt100
+
+# Auto-login on tty1
+tty1::respawn:/sbin/getty -n -l /bin/sh 38400 tty1
+
+# Stuff to do for the 3-finger salute
+::ctrlaltdel:/sbin/reboot
+
+# Stuff to do before rebooting
+::shutdown:/bin/umount -a -r
+::shutdown:/sbin/swapoff -a

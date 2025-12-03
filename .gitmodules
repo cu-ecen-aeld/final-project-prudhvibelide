@@ -1,3 +1,4 @@
 [submodule "buildroot"]
 	path = buildroot
-	url = git@github.com:prudhvibelide/final-project-buildroot.git
+	url = https://github.com/buildroot/buildroot.git
+	branch = 2024.02.x
