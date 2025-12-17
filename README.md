@@ -1,4 +1,4 @@
-# Virtualized Embedded Media Controller for Network-Based Playback
+# Custom Linux Platform driver for Embedded Audio Controller
 
 A Embedded Linux music player system demonstrating kernel driver development, device tree integration, socket server implementation, and system programming on Raspberry Pi 4.
 
@@ -386,5 +386,6 @@ This project builds upon concepts from:
   - System service integration
 
 ---
+
 
 
